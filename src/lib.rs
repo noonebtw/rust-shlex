@@ -57,6 +57,16 @@ impl<'a> Shlex<'a, core::str::Bytes<'a>> {
     }
 }
 
+impl<'a, I, B> From<I> for Shlex<'a, B>
+where
+    I: IntoIterator<IntoIter = B>,
+    B: Iterator<Item = u8> + 'a,
+{
+    fn from(into_iter: I) -> Self {
+        Self::new_bytes(into_iter.into_iter())
+    }
+}
+
 impl<'a, B> Shlex<'a, B>
 where
     B: Iterator<Item = u8> + 'a,
@@ -138,8 +148,52 @@ where
 
     fn next_char(&mut self) -> Option<u8> {
         let res = self.in_iter.next();
-        if res == Some('\n' as u8) { self.line_no += 1; }
+        if res == Some('\n' as u8) {
+            self.line_no += 1;
+        }
         res
+    }
+
+    pub fn split(&mut self) -> Option<Vec<String>> {
+        let res = self.collect();
+        if self.had_error {
+            None
+        } else {
+            Some(res)
+        }
+    }
+}
+
+impl<'a, B> Shlex<'a, B>
+where
+    B: Iterator<Item = u8> + ExactSizeIterator + AsRef<[u8]> + 'a,
+{
+    pub fn quote<'b, 'c>(&'b self) -> Cow<'c, [u8]>
+    where
+        'b: 'c,
+        'a: 'c,
+    {
+        if self.in_iter.len() == 0 {
+            b"\"\""[..].into()
+        } else if self.in_iter.as_ref().iter().any(|&c| match c as char {
+            '|' | '&' | ';' | '<' | '>' | '(' | ')' | '$' | '`' | '\\' | '"' | '\'' | ' '
+            | '\t' | '\r' | '\n' | '*' | '?' | '[' | '#' | '~' | '=' | '%' => true,
+            _ => false,
+        }) {
+            let mut out: Vec<u8> = Vec::new();
+            out.push('"' as u8);
+            for &c in self.in_iter.as_ref().iter() {
+                match c as char {
+                    '$' | '`' | '"' | '\\' => out.push('\\' as u8),
+                    _ => (),
+                }
+                out.push(c);
+            }
+            out.push('"' as u8);
+            out.into()
+        } else {
+            Cow::from(self.in_iter.as_ref())
+        }
     }
 }
 
