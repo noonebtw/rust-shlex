@@ -22,6 +22,7 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
+use alloc::borrow::Borrow;
 use alloc::borrow::Cow;
 use alloc::string::String;
 #[cfg(test)]
@@ -31,10 +32,7 @@ use alloc::borrow::ToOwned;
 
 /// An iterator that takes an input string and splits it into the words using the same syntax as
 /// the POSIX shell.
-pub struct Shlex<'a, B>
-where
-    B: Iterator<Item = u8>,
-{
+pub struct Shlex<'a, B> {
     in_iter: B,
     /// The number of newlines read so far, plus one.
     pub line_no: usize,
@@ -57,21 +55,23 @@ impl<'a> Shlex<'a, core::str::Bytes<'a>> {
     }
 }
 
-impl<'a, I, B> From<I> for Shlex<'a, B>
+impl<'a, II, I, B> From<II> for Shlex<'a, I>
 where
-    I: IntoIterator<IntoIter = B>,
-    B: Iterator<Item = u8> + 'a,
+    II: IntoIterator<IntoIter = I>,
+    I: Iterator<Item = B> + 'a,
+    B: Borrow<u8>,
 {
-    fn from(into_iter: I) -> Self {
+    fn from(into_iter: II) -> Self {
         Self::new_bytes(into_iter.into_iter())
     }
 }
 
-impl<'a, B> Shlex<'a, B>
+impl<'a, I, B> Shlex<'a, I>
 where
-    B: Iterator<Item = u8> + 'a,
+    I: Iterator<Item = B> + 'a,
+    B: Borrow<u8>,
 {
-    pub fn new_bytes(in_bytes: B) -> Self {
+    pub fn new_bytes(in_bytes: I) -> Self {
         Shlex {
             in_iter: in_bytes,
             line_no: 1,
@@ -147,7 +147,7 @@ where
     }
 
     fn next_char(&mut self) -> Option<u8> {
-        let res = self.in_iter.next();
+        let res = self.in_iter.next().map(|b| *b.borrow());
         if res == Some('\n' as u8) {
             self.line_no += 1;
         }
@@ -164,9 +164,10 @@ where
     }
 }
 
-impl<'a, B> Shlex<'a, B>
+impl<'a, I, B> Shlex<'a, I>
 where
-    B: Iterator<Item = u8> + ExactSizeIterator + AsRef<[u8]> + 'a,
+    I: Iterator<Item = B> + ExactSizeIterator + AsRef<[u8]> + 'a,
+    B: Borrow<u8>,
 {
     pub fn quote<'b, 'c>(&'b self) -> Cow<'c, [u8]>
     where
@@ -197,9 +198,10 @@ where
     }
 }
 
-impl<'a, B> Iterator for Shlex<'a, B>
+impl<'a, I, B> Iterator for Shlex<'a, I>
 where
-    B: Iterator<Item = u8> + 'a,
+    I: Iterator<Item = B> + 'a,
+    B: Borrow<u8>,
 {
     type Item = String;
     fn next(&mut self) -> Option<String> {
@@ -332,19 +334,30 @@ mod byte_tests {
     fn test_split() {
         for &(input, output) in super::SPLIT_TEST_ITEMS {
             assert_eq!(
-                Shlex::from(input.as_bytes().iter().map(|b| *b)).split(),
+                Shlex::from(input.as_bytes()).split(),
                 output.map(|o| o.iter().map(|&x| x.to_owned()).collect())
             );
+        }
+    }
 
-            #[test]
-            fn test_lineno() {
-                let mut sh = Shlex::new("\nfoo\nbar");
-                while let Some(word) = sh.next() {
-                    if word == "bar" {
-                        assert_eq!(sh.line_no, 3);
-                    }
-                }
+    #[test]
+    fn test_lineno() {
+        let mut sh = Shlex::new("\nfoo\nbar");
+        while let Some(word) = sh.next() {
+            if word == "bar" {
+                assert_eq!(sh.line_no, 3);
             }
         }
+    }
+
+    #[test]
+    fn test_quote() {
+        assert_eq!(Shlex::from("foobar".as_bytes()).quote(), &b"foobar"[..]);
+        assert_eq!(
+            Shlex::from("foo bar".as_bytes()).quote(),
+            &b"\"foo bar\""[..]
+        );
+        assert_eq!(Shlex::from("\"".as_bytes()).quote(), &b"\"\\\"\""[..]);
+        assert_eq!(Shlex::from("".as_bytes()).quote(), &b"\"\""[..]);
     }
 }
