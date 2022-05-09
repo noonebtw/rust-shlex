@@ -31,8 +31,11 @@ use alloc::borrow::ToOwned;
 
 /// An iterator that takes an input string and splits it into the words using the same syntax as
 /// the POSIX shell.
-pub struct Shlex<'a> {
-    in_iter: core::str::Bytes<'a>,
+pub struct Shlex<'a, B>
+where
+    B: Iterator<Item = u8>,
+{
+    in_iter: B,
     /// The number of newlines read so far, plus one.
     pub line_no: usize,
     /// An input string is erroneous if it ends while inside a quotation or right after an
@@ -40,14 +43,30 @@ pub struct Shlex<'a> {
     /// happens, Shlex just throws out the last token, ends the iteration, and sets 'had_error' to
     /// true; best to check it after you're done iterating.
     pub had_error: bool,
+    _phantom: core::marker::PhantomData<&'a ()>,
 }
 
-impl<'a> Shlex<'a> {
+impl<'a> Shlex<'a, core::str::Bytes<'a>> {
     pub fn new(in_str: &'a str) -> Self {
         Shlex {
             in_iter: in_str.bytes(),
             line_no: 1,
             had_error: false,
+            _phantom: core::marker::PhantomData::default(),
+        }
+    }
+}
+
+impl<'a, B> Shlex<'a, B>
+where
+    B: Iterator<Item = u8> + 'a,
+{
+    pub fn new_bytes(in_bytes: B) -> Self {
+        Shlex {
+            in_iter: in_bytes,
+            line_no: 1,
+            had_error: false,
+            _phantom: core::marker::PhantomData::default(),
         }
     }
 
@@ -124,7 +143,10 @@ impl<'a> Shlex<'a> {
     }
 }
 
-impl<'a> Iterator for Shlex<'a> {
+impl<'a, B> Iterator for Shlex<'a, B>
+where
+    B: Iterator<Item = u8> + 'a,
+{
     type Item = String;
     fn next(&mut self) -> Option<String> {
         if let Some(mut ch) = self.next_char() {
