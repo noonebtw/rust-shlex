@@ -22,6 +22,10 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
+#[cfg(feature = "std")]
+extern crate core;
+use core::iter::FromIterator;
+
 use alloc::borrow::Borrow;
 use alloc::borrow::Cow;
 use alloc::string::String;
@@ -46,12 +50,7 @@ pub struct Shlex<'a, B> {
 
 impl<'a> Shlex<'a, core::str::Bytes<'a>> {
     pub fn new(in_str: &'a str) -> Self {
-        Shlex {
-            in_iter: in_str.bytes(),
-            line_no: 1,
-            had_error: false,
-            _phantom: core::marker::PhantomData::default(),
-        }
+        Self::new_bytes(in_str.bytes())
     }
 }
 
@@ -71,61 +70,95 @@ where
     I: Iterator<Item = B> + 'a,
     B: Borrow<u8>,
 {
-    pub fn new_bytes(in_bytes: I) -> Self {
+    pub fn new_bytes<II>(into_iter: II) -> Self
+    where
+        II: IntoIterator<IntoIter = I>,
+    {
         Shlex {
-            in_iter: in_bytes,
+            in_iter: into_iter.into_iter(),
             line_no: 1,
             had_error: false,
             _phantom: core::marker::PhantomData::default(),
         }
     }
+}
 
-    fn parse_word(&mut self, mut ch: u8) -> Option<String> {
+impl<'a, I, B> Shlex<'a, I>
+where
+    I: Iterator<Item = B> + 'a,
+    B: Borrow<u8>,
+{
+    fn parse_word(&mut self, mut ch: u8) -> Option<Vec<u8>> {
         let mut result: Vec<u8> = Vec::new();
         loop {
-            match ch as char {
-                '"' => if let Err(()) = self.parse_double(&mut result) {
-                    self.had_error = true;
-                    return None;
-                },
-                '\'' => if let Err(()) = self.parse_single(&mut result) {
-                    self.had_error = true;
-                    return None;
-                },
-                '\\' => if let Some(ch2) = self.next_char() {
-                    if ch2 != '\n' as u8 { result.push(ch2); }
-                } else {
-                    self.had_error = true;
-                    return None;
-                },
-                ' ' | '\t' | '\n' => { break; },
-                _ => { result.push(ch as u8); },
+            match ch {
+                b'"' => {
+                    if let Err(()) = self.parse_double(&mut result) {
+                        self.had_error = true;
+                        return None;
+                    }
+                }
+                b'\'' => {
+                    if let Err(()) = self.parse_single(&mut result) {
+                        self.had_error = true;
+                        return None;
+                    }
+                }
+                b'\\' => {
+                    if let Some(ch2) = self.next_byte() {
+                        if ch2 != b'\n' {
+                            result.push(ch2);
+                        }
+                    } else {
+                        self.had_error = true;
+                        return None;
+                    }
+                }
+                b' ' | b'\t' | b'\n' => {
+                    break;
+                }
+                _ => {
+                    result.push(ch);
+                }
             }
-            if let Some(ch2) = self.next_char() { ch = ch2; } else { break; }
+            if let Some(ch2) = self.next_byte() {
+                ch = ch2;
+            } else {
+                break;
+            }
         }
-        unsafe { Some(String::from_utf8_unchecked(result)) }
+        Some(result)
     }
 
     fn parse_double(&mut self, result: &mut Vec<u8>) -> Result<(), ()> {
         loop {
-            if let Some(ch2) = self.next_char() {
-                match ch2 as char {
-                    '\\' => {
-                        if let Some(ch3) = self.next_char() {
-                            match ch3 as char {
+            if let Some(ch2) = self.next_byte() {
+                match ch2 {
+                    b'\\' => {
+                        if let Some(ch3) = self.next_byte() {
+                            match ch3 {
                                 // \$ => $
-                                '$' | '`' | '"' | '\\' => { result.push(ch3); },
+                                b'$' | b'`' | b'"' | b'\\' => {
+                                    result.push(ch3);
+                                }
                                 // \<newline> => nothing
-                                '\n' => {},
+                                b'\n' => {}
                                 // \x => =x
-                                _ => { result.push('\\' as u8); result.push(ch3); }
+                                _ => {
+                                    result.push(b'\\');
+                                    result.push(ch3);
+                                }
                             }
                         } else {
                             return Err(());
                         }
-                    },
-                    '"' => { return Ok(()); },
-                    _ => { result.push(ch2); },
+                    }
+                    b'"' => {
+                        return Ok(());
+                    }
+                    _ => {
+                        result.push(ch2);
+                    }
                 }
             } else {
                 return Err(());
@@ -135,10 +168,14 @@ where
 
     fn parse_single(&mut self, result: &mut Vec<u8>) -> Result<(), ()> {
         loop {
-            if let Some(ch2) = self.next_char() {
-                match ch2 as char {
-                    '\'' => { return Ok(()); },
-                    _ => { result.push(ch2); },
+            if let Some(ch2) = self.next_byte() {
+                match ch2 {
+                    b'\'' => {
+                        return Ok(());
+                    }
+                    _ => {
+                        result.push(ch2);
+                    }
                 }
             } else {
                 return Err(());
@@ -146,7 +183,7 @@ where
         }
     }
 
-    fn next_char(&mut self) -> Option<u8> {
+    fn next_byte(&mut self) -> Option<u8> {
         let res = self.in_iter.next().map(|b| *b.borrow());
         if res == Some('\n' as u8) {
             self.line_no += 1;
@@ -154,13 +191,34 @@ where
         res
     }
 
-    pub fn split(&mut self) -> Option<Vec<String>> {
+    pub fn split(&mut self) -> Option<Vec<Vec<u8>>> {
         let res = self.collect();
         if self.had_error {
             None
         } else {
             Some(res)
         }
+    }
+
+    pub fn collect_strings<R>(self) -> R
+    where
+        R: FromIterator<String>,
+    {
+        self.into_iter()
+            .map(|bytes| unsafe { String::from_utf8_unchecked(bytes) })
+            .collect::<R>()
+    }
+
+    pub fn next_string(&mut self) -> Option<String> {
+        self.next()
+            .map(|bytes| unsafe { String::from_utf8_unchecked(bytes) })
+    }
+
+    pub fn collect_bytes<R>(self) -> R
+    where
+        R: FromIterator<<Self as Iterator>::Item>,
+    {
+        self.into_iter().collect::<R>()
     }
 }
 
@@ -203,36 +261,51 @@ where
     I: Iterator<Item = B> + 'a,
     B: Borrow<u8>,
 {
-    type Item = String;
-    fn next(&mut self) -> Option<String> {
-        if let Some(mut ch) = self.next_char() {
+    type Item = Vec<u8>;
+    fn next(&mut self) -> Option<Vec<u8>> {
+        if let Some(mut ch) = self.next_byte() {
             // skip initial whitespace
             loop {
-                match ch as char {
-                    ' ' | '\t' | '\n' => {},
-                    '#' => {
-                        while let Some(ch2) = self.next_char() {
-                            if ch2 as char == '\n' { break; }
+                match ch {
+                    b' ' | b'\t' | b'\n' => {}
+                    b'#' => {
+                        while let Some(ch2) = self.next_byte() {
+                            if ch2 == b'\n' {
+                                break;
+                            }
                         }
-                    },
-                    _ => { break; }
+                    }
+                    _ => {
+                        break;
+                    }
                 }
-                if let Some(ch2) = self.next_char() { ch = ch2; } else { return None; }
+                if let Some(ch2) = self.next_byte() {
+                    ch = ch2;
+                } else {
+                    return None;
+                }
             }
             self.parse_word(ch)
-        } else { // no initial character
+        } else {
+            // no initial character
             None
         }
     }
-
 }
 
 /// Convenience function that consumes the whole string at once.  Returns None if the input was
 /// erroneous.
 pub fn split(in_str: &str) -> Option<Vec<String>> {
     let mut shl = Shlex::new(in_str);
-    let res = shl.by_ref().collect();
-    if shl.had_error { None } else { Some(res) }
+    let res = shl
+        .by_ref()
+        .map(|bytes| unsafe { String::from_utf8_unchecked(bytes) })
+        .collect();
+    if shl.had_error {
+        None
+    } else {
+        Some(res)
+    }
 }
 
 /// Given a single word, return a string suitable to encode it as a shell argument.
@@ -296,14 +369,17 @@ static SPLIT_TEST_ITEMS: &'static [(&'static str, Option<&'static [&'static str]
 #[test]
 fn test_split() {
     for &(input, output) in SPLIT_TEST_ITEMS {
-        assert_eq!(split(input), output.map(|o| o.iter().map(|&x| x.to_owned()).collect()));
+        assert_eq!(
+            split(input),
+            output.map(|o| o.iter().map(|&x| x.to_owned()).collect())
+        );
     }
 }
 
 #[test]
 fn test_lineno() {
     let mut sh = Shlex::new("\nfoo\nbar");
-    while let Some(word) = sh.next() {
+    while let Some(word) = sh.next_string() {
         if word == "bar" {
             assert_eq!(sh.line_no, 3);
         }
@@ -335,7 +411,7 @@ mod byte_tests {
         for &(input, output) in super::SPLIT_TEST_ITEMS {
             assert_eq!(
                 Shlex::from(input.as_bytes()).split(),
-                output.map(|o| o.iter().map(|&x| x.to_owned()).collect())
+                output.map(|o| o.iter().map(|&x| x.as_bytes().to_vec()).collect())
             );
         }
     }
@@ -344,7 +420,7 @@ mod byte_tests {
     fn test_lineno() {
         let mut sh = Shlex::new("\nfoo\nbar");
         while let Some(word) = sh.next() {
-            if word == "bar" {
+            if word == b"bar" {
                 assert_eq!(sh.line_no, 3);
             }
         }
