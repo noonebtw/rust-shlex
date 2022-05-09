@@ -323,3 +323,28 @@ fn test_join() {
     assert_eq!(join(vec!["a", "b"]), "a b");
     assert_eq!(join(vec!["foo bar", "baz"]), "\"foo bar\" baz");
 }
+
+#[cfg(test)]
+mod byte_tests {
+    use super::*;
+
+    #[test]
+    fn test_split() {
+        for &(input, output) in super::SPLIT_TEST_ITEMS {
+            assert_eq!(
+                Shlex::from(input.as_bytes().iter().map(|b| *b)).split(),
+                output.map(|o| o.iter().map(|&x| x.to_owned()).collect())
+            );
+
+            #[test]
+            fn test_lineno() {
+                let mut sh = Shlex::new("\nfoo\nbar");
+                while let Some(word) = sh.next() {
+                    if word == "bar" {
+                        assert_eq!(sh.line_no, 3);
+                    }
+                }
+            }
+        }
+    }
+}
